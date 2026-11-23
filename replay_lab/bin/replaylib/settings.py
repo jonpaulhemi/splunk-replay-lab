@@ -171,6 +171,20 @@ def validate(form, members):
     return out
 
 
+def prepare_refusal(merged, cluster):
+    """Why a Prepare request can't start with these settings, or None. The input refuses it too
+    (it may be switched on after the request); this only says so before anything is saved."""
+    try:
+        on = _boolean(str(merged.get("enabled", "0"))) == "1"
+    except ValueError:
+        on = False
+    if on:
+        return "switch the dataset off first: a re-export can't replace files under a running replay"
+    if cluster and not str(merged.get("run_on") or "").strip():
+        return "choose the member that plays it first: the export lands on that member's disk"
+    return None
+
+
 # -- splunkd --
 
 def _ok(status):
@@ -249,10 +263,15 @@ def handle(rest, method, path, form):
         return 200, {"name": name, "settings": known[name], "status": statuses(rest).get(name, {})}
     if method != "POST":
         return 405, {"error": "GET or POST"}
+    servers = members(rest)
     try:
-        values = validate({k: v for k, v in form.items() if k != "output_mode"}, members(rest)["members"])
+        values = validate({k: v for k, v in form.items() if k != "output_mode"}, servers["members"])
     except Invalid as e:
         return 400, {"error": "invalid settings", "fields": e.errors}
+    if "prepare_request" in values:
+        refused = prepare_refusal({**known[name], **values}, servers["cluster"])
+        if refused:
+            return 409, {"error": refused, "fields": {"prepare_request": refused}}
     if values:
         save(rest, name, values)
     return 200, {"name": name, "saved": values, "settings": datasets(rest).get(name, {})}

@@ -6,3 +6,11 @@
 #replay-settings form.rl-form { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; max-width: 640px; margin: 8px 0 16px; }
 #replay-settings form.rl-form .rl-field-error { grid-column: 2; color: #b3261e; font-size: 12px; }
 #replay-settings .rl-note { color: #666; font-size: 12px; }
+#replay-settings .rl-prepare { border-top: 1px solid #ddd; padding-top: 8px; max-width: 760px; }
+#replay-settings .rl-prepare h4 { margin: 0 0 4px; }
+#replay-settings .rl-buttons .btn { margin-right: 6px; }
+#replay-settings .rl-confirm { margin: 8px 0; padding: 8px; background: #fff4e5; border: 1px solid #f0b46c; }
+#replay-settings .rl-confirm .btn { margin-left: 6px; }
+#replay-settings .rl-step.failed, #replay-settings .rl-prepare-head.failed { color: #b3261e; }
+#replay-settings .rl-step.done, #replay-settings .rl-prepare-head.done { color: #1b6e3a; }
+#replay-settings .rl-warning { color: #8a5300; font-size: 12px; }

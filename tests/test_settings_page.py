@@ -4,6 +4,7 @@ Needs Node.js with Playwright and a Chromium for it; skipped where they are miss
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -68,6 +69,10 @@ def server():
             self._send(200, (folder / name).read_bytes(), kind)
 
         def do_POST(self):
+            if self.path.startswith("/test/status/"):  # the test plays the input's part
+                length = int(self.headers.get("Content-Length") or 0)
+                splunkd.status.setdefault(self.path.rsplit("/", 1)[1], {}).update(json.loads(self.rfile.read(length)))
+                return self._send(200, {})
             self._api("POST")
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -90,3 +95,27 @@ def test_the_page_lists_datasets_refuses_a_bad_value_and_saves_a_good_one(server
     assert "HH:MM" in seen["fieldError"]
     assert splunkd.conf["dataset:botsv3"]["daily_start"] == "10:30"
     assert splunkd.conf["dataset:botsv3"]["run_on"] == "sh3" and splunkd.conf["dataset:botsv3"]["enabled"] == "1"
+
+
+def run_script(name, base):
+    run = subprocess.run(["node", str(PAGE / name), base], capture_output=True, text=True, timeout=120, cwd=PAGE)
+    return json.loads(run.stdout.strip().splitlines()[-1]) if run.stdout.strip() else {"error": run.stderr}
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="needs Node.js with Playwright")
+def test_prepare_from_the_page_confirms_a_re_export_and_shows_progress_and_a_summary(server):
+    base, splunkd = server
+    splunkd.conf["dataset:botsv3"]["run_on"] = "sh1"
+    seen = run_script("prepare.mjs", base)
+
+    assert "error" not in seen, seen
+    assert seen["dedaleDisabled"] and "Switch the dataset off" in seen["dedaleNote"]
+    assert seen["confirm"].startswith("This replaces the export on sh1")
+    assert seen["afterCancel"] == "" and seen["waiting"].startswith("Requested; sh1 starts it")
+    assert re.fullmatch(r"\d+:setup,export,assets", splunkd.conf["dataset:botsv3"]["prepare_request"])
+    assert seen["running"] == ["Setup: done (changes 4)", "Export: running (12 feeds done)", "Asset lists: waiting"]
+    assert seen["buttonsWhileRunning"] is True
+    assert seen["done"]["head"] == "Finished (setup, export, assets)"
+    assert seen["done"]["warnings"] == ["Warning: missing add-ons (some detections won't fire): Splunk_TA_nix"]
+    assert seen["failed"] == ["Asset lists: failed: no hosts"]
+    assert seen["refused"] == "Refused: switch the dataset off before Prepare"

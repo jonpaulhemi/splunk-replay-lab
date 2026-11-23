@@ -200,21 +200,31 @@ class Runner:
         self.state["prepare_handled"] = request
         self.checkpoint.save(self.state)
         parsed = prepare_mod.parse_request(request)
+        refused = None
         if parsed is None:
-            self.status({"state": "prepare_refused", "at": now, "error": f"malformed prepare_request {request!r}"})
-            return False
-        if cfg.enabled:
-            self.status({"state": "prepare_refused", "at": now,
-                         "error": "switch the dataset off before Prepare; a re-export can't swap files under a replay"})
+            refused = f"malformed prepare_request {request!r}"
+        elif cfg.enabled:
+            refused = "switch the dataset off before Prepare; a re-export can't swap files under a replay"
+        if refused:  # kept on the record, so the page shows it after the error clears
+            self._progress = {"request": request, "refused": refused}
+            self.status({"state": "prepare_refused", "at": now, "error": refused, "prepare": dict(self._progress)})
             return False
         _, steps = parsed
-        self._progress = {"request": request, "steps": steps, "log": []}
+        # "state": each step's latest status record, kept whole; "log": only the latest records
+        self._progress = {"request": request, "steps": steps, "state": {}, "feeds": 0, "log": []}
         self._dataset = None  # the export may change under us
 
         def progress(record):
+            step = record.get("step")
+            if step and "status" in record:
+                self._progress["state"][step] = {k: v for k, v in record.items() if k != "step"}
+            if step == "check":
+                self._progress["missing_addons"] = record.get("missing_addons", [])
+            if "feed" in record:
+                self._progress["feeds"] += 1
             log = self._progress["log"]
             log.append(record)
-            del log[:-50]  # the latest records are enough for the page
+            del log[:-20]
 
         def job():
             try:

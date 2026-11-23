@@ -217,3 +217,29 @@ def test_a_dataset_with_no_export_yet_says_so_and_touches_nothing(tmp_path, monk
     assert runner.tick() == 0
     assert records[-1]["state"] == "no_export" and records[-1]["export"] == {"ready": False}
     assert Rules.calls == []  # no rule is switched on for a dataset that can't play
+
+
+# --- Prepare requests ---
+
+def test_a_prepare_request_is_refused_while_the_dataset_is_on():
+    splunkd = FakeSplunkd()
+    status, body = settings.handle(splunkd, "POST", "datasets/dedale", {"prepare_request": "1700000000:export"})
+    assert status == 409 and "switch the dataset off" in body["fields"]["prepare_request"]
+    assert "prepare_request" not in splunkd.conf["dataset:dedale"]
+
+
+def test_on_a_cluster_a_prepare_request_needs_the_member_that_plays_it():
+    splunkd = FakeSplunkd()
+    status, body = settings.handle(splunkd, "POST", "datasets/botsv3", {"prepare_request": "1700000000:export"})
+    assert status == 409 and "choose the member" in body["error"]
+
+    status, _ = settings.handle(splunkd, "POST", "datasets/botsv3",
+                                {"run_on": "sh1", "prepare_request": "1700000000:export"})
+    assert status == 200 and splunkd.conf["dataset:botsv3"]["prepare_request"] == "1700000000:export"
+
+
+def test_a_standalone_box_prepares_without_a_member_and_a_bad_request_is_named():
+    splunkd = FakeSplunkd(cluster=False)
+    assert settings.handle(splunkd, "POST", "datasets/botsv3", {"prepare_request": "1700000000:assets"})[0] == 200
+    status, body = settings.handle(splunkd, "POST", "datasets/botsv3", {"prepare_request": "now:everything"})
+    assert status == 400 and "prepare_request" in body["fields"]

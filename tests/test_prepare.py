@@ -463,6 +463,7 @@ def test_a_request_is_refused_while_the_dataset_is_on(tmp_path):
 
     assert calls == []
     assert statuses[0]["state"] == "prepare_refused" and "switch the dataset off" in statuses[0]["error"]
+    assert statuses[0]["prepare"] == {"request": "1700000000:export", "refused": statuses[0]["error"]}
 
 
 def test_a_malformed_request_is_refused_and_a_crash_never_kills_the_input(tmp_path):
@@ -504,3 +505,29 @@ def test_undo_takes_out_its_wrapper_in_either_order(first):
     other = "beta_live" if first == "alpha_live" else "alpha_live"
     assert setup_mod.unwrap(setup_mod.unwrap(both, first), other) == "(index=a OR index=b)"
     assert setup_mod.unwrap("(index=x)", "alpha_live") == "(index=x)"
+
+
+def test_on_a_cluster_prepare_saved_from_member_2_runs_only_on_member_1(tmp_path):
+    """Demo: the page on sh2 saves the request through the settings API; the replicated setting
+    reaches both members, and only sh1, which plays the dataset, runs it."""
+    sys.path.insert(0, str(REPO / "tests"))
+    from replaylib import settings
+    from test_settings_api import FakeSplunkd as SettingsSplunkd
+    sh2 = SettingsSplunkd()
+    sh2.conf["dataset:alpha"] = {"enabled": "0", "run_on": "sh1"}
+    status, _ = settings.handle(sh2, "POST", "datasets/alpha", {"prepare_request": "1700000000:export,assets"})
+    assert status == 200
+
+    app = make_app(tmp_path)
+    write_local(app, "alpha", **{k: v for k, v in sh2.conf["dataset:alpha"].items()})  # replicated
+    ran, statuses = {}, {"sh1": [], "sh2": []}
+    runners = {m: Runner(app, tmp_path / f"{m}.json", io.StringIO(), status=statuses[m].append, dataset="alpha",
+                         server_name=m, sleep=lambda s: None, now=lambda: FIRST,
+                         prepare=lambda cfg, steps, progress, m=m: ran.setdefault(m, steps) and {"ok": True})
+               for m in ("sh1", "sh2")}
+    for runner in runners.values():
+        runner.tick()
+    wait_for(runners["sh1"])
+
+    assert ran == {"sh1": ["export", "assets"]}
+    assert statuses["sh1"][-1]["state"] == "preparing" and statuses["sh2"][-1]["state"] == "standby"
