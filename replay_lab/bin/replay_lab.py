@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from replaylib.ledger import KvLedger  # noqa: E402
 from replaylib.rules import Rest, Rules  # noqa: E402
 from replaylib.runner import SCHEME, Runner  # noqa: E402
+from replaylib.status import StatusKv  # noqa: E402
 
 SCHEME_XML = """<scheme>
   <title>Replay lab</title>
@@ -65,8 +66,14 @@ def main(argv):
     dataset = dataset_of(root)
     checkpoint_dir = root.findtext("checkpoint_dir") or "."
     app_dir = Path(__file__).resolve().parent.parent
-    status = status_writer(dataset)
+    log = status_writer(dataset)
     rest = Rest(root.findtext("server_uri") or "https://127.0.0.1:8089", root.findtext("session_key") or "")
+    server = root.findtext("server_host") or ""
+    kv = StatusKv(rest, dataset, server)
+
+    def status(record):  # every record to the log; the latest state to the page's KV record
+        log(record)
+        kv(record)
 
     def rules(cfg):
         return Rules(rest, cfg.rules, cfg.reset_lookups, cfg.reset_searches, log=status,
@@ -75,7 +82,7 @@ def main(argv):
                      risk_suppress_fields=cfg.risk_suppress_fields)
     runner = Runner(app_dir, Path(checkpoint_dir) / f"{dataset}.json", sys.stdout,
                     status=status, now=time.time, sleep=time.sleep, rules=rules,
-                    server_name=root.findtext("server_host") or "", dataset=dataset,
+                    server_name=server, dataset=dataset,
                     ledger=lambda: KvLedger(dataset, rest))
     runner.run()
     return 0

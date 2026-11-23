@@ -129,7 +129,13 @@ class Runner:
             applied.append(f"risk_earliest={cfg.risk_earliest}")
         if cfg.risk_suppress_fields:
             applied.append(f"risk_suppress_fields={cfg.risk_suppress_fields}")
-        data = self.dataset(cfg)
+        try:
+            data = self.dataset(cfg)
+        except (OSError, ValueError) as e:  # no export yet (run Prepare dataset), or a broken one
+            self._dataset = None
+            self.status({"state": "no_export", "at": now, "export": {"ready": False},
+                         "error": f"no usable export in {self.data_dir}: {e.__class__.__name__}"})
+            return 0
         anchor = self.state.get("anchor")
         if anchor is None:
             anchor = int(float(cfg.replay["anchor"])) if cfg.replay["anchor"].strip() else now
@@ -164,7 +170,8 @@ class Runner:
         self.state["next"] = now
         self.checkpoint.save(self.state)
         self.status({"state": "on", "at": now, "index": cfg.replay["index"], "events": len(events), "from": w0, "to": now,
-                     **engine.status(now), "skipped_seconds": skipped, "wrapped": wrapped})
+                     **engine.status(now), "skipped_seconds": skipped, "wrapped": wrapped,
+                     "export": {"ready": True, "segments": len(data)}})
         return len(events)
 
     def _ledger(self):
