@@ -1,0 +1,106 @@
+<form version="1.1" theme="light">
+  <label>Replay health</label>
+  <description>Is each dataset playing, and is it producing a steady flow of findings?</description>
+  <fieldset submitButton="false">
+    <input type="dropdown" token="dataset" searchWhenChanged="true">
+      <label>Dataset</label>
+      <fieldForLabel>dataset</fieldForLabel>
+      <fieldForValue>dataset</fieldForValue>
+      <search>
+        <query>index=_internal sourcetype=replay_lab:status | stats count by dataset</query>
+        <earliest>-24h</earliest>
+        <latest>now</latest>
+      </search>
+      <selectFirstChoice>true</selectFirstChoice>
+    </input>
+    <input type="time" token="range">
+      <label>Time range</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+  <search id="live_index">
+    <query>index=_internal sourcetype=replay_lab:status dataset="$dataset$" state=on index=* | head 1 | table index</query>
+    <earliest>-24h</earliest>
+    <latest>now</latest>
+    <done>
+      <set token="live_index">$result.index$</set>
+    </done>
+  </search>
+  <row>
+    <panel>
+      <title>Open findings now (all datasets)</title>
+      <single>
+        <search>
+          <query>`notable` | search status_end="false" | stats count</query>
+          <earliest>-7d@d</earliest>
+          <latest>now</latest>
+        </search>
+      </single>
+    </panel>
+    <panel>
+      <title>Replay status (last tick)</title>
+      <table>
+        <search>
+          <query>index=_internal sourcetype=replay_lab:status dataset="$dataset$" | head 1 | eval loop_hours=round(loop_seconds/3600,1), position_hours=round(position/3600,2), last_tick=strftime(at,"%F %T") | table last_tick state loop position_hours loop_hours events skipped_seconds</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Replay schedule (last tick)</title>
+      <table>
+        <search>
+          <query>index=_internal sourcetype=replay_lab:status dataset="$dataset$" state=on | head 1 | eval now=if(playing="true" OR playing=1, "workday (playing)", "idle until next start"), day=loop | table mode now day next_start_text</query>
+          <earliest>-15m</earliest>
+          <latest>now</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Findings per hour, by rule (all datasets)</title>
+      <chart>
+        <search>
+          <query>`notable` | timechart span=1h count by search_name limit=20 useother=true</query>
+          <earliest>$range.earliest$</earliest>
+          <latest>$range.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+      </chart>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Replayed events per hour, by sourcetype</title>
+      <chart>
+        <search>
+          <query>| tstats count where index="$live_index$" by _time span=1h, sourcetype | xyseries _time sourcetype count</query>
+          <earliest>$range.earliest$</earliest>
+          <latest>$range.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+      </chart>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Wraps (day starts, or loop starts)</title>
+      <table>
+        <search>
+          <query>index=_internal sourcetype=replay_lab:status dataset="$dataset$" wrapped{}=* | eval at=strftime(at,"%F %T") | table at wrapped{} events</query>
+          <earliest>$range.earliest$</earliest>
+          <latest>$range.latest$</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+</form>
