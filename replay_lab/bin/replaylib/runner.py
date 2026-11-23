@@ -46,20 +46,37 @@ def _short(name):
     return name.strip().lower().split(".")[0]
 
 
+MIGRATE_GRACE = 600  # seconds an off dataset keeps a migrated position (see migrate.py)
+
+
 class Checkpoint:
     def __init__(self, path):
         self.path = Path(path)
+        self._last = ""  # the text this process last read or wrote ("" = no file yet)
 
     def load(self):
         try:
-            return json.loads(self.path.read_text())
+            self._last = self.path.read_text()
+            return json.loads(self._last)
         except (OSError, ValueError):
             return {}
 
+    def changed(self):
+        """The state on disk when something else wrote it (a migration), else None."""
+        try:
+            text = self.path.read_text()
+        except OSError:
+            return None
+        if text == self._last:
+            return None
+        return self.load()
+
     def save(self, state):
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, sort_keys=True))
+        text = json.dumps(state, sort_keys=True)
+        tmp.write_text(text)
         os.replace(tmp, self.path)
+        self._last = text
 
 
 class Runner:
@@ -108,6 +125,9 @@ class Runner:
         """One tick. Returns how many events it emitted."""
         cfg = config_mod.load(self.app_dir, self.name)
         now = int(self.now())
+        fresh = self.checkpoint.changed()
+        if fresh is not None:  # written by the migrate command while this input ran
+            self.state = fresh
         run_on = cfg.replay.get("run_on", "").strip()
         # splunkd hands the input its host name (sh1.example.com), not always the serverName
         # (sh1): compare the short names.
@@ -122,6 +142,12 @@ class Runner:
             # Data only. Rules this app switched on earlier (mode was escu) go back first.
             self._rules_off(rules)
             rules = None
+        if not cfg.enabled and now - int(self.state.get("migrated", 0)) < MIGRATE_GRACE:
+            # Just migrated from an older app, whose settings (enabled last) are still on their
+            # way: keep the position and the rules it took over.
+            self.status({"state": "off", "at": now, "migrated": True})
+            return 0
+        self.state.pop("migrated", None)
         if not cfg.enabled:
             # Off: forget the position, so switching back on starts from now, not a flood.
             if "next" in self.state:
