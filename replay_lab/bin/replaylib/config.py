@@ -42,6 +42,12 @@ REPLAY_DEFAULTS = {
     "data_dir": "",
     # Shown on the settings page.
     "label": "",
+    # Add-ons the pack needs (comma or space separated app names); Prepare warns about missing ones.
+    "requires": "",
+    # Roles besides admin that should search the live index (setup adds it to srchIndexesAllowed).
+    "extra_roles": "",
+    # Set by the settings page: <epoch>:<steps>. The named member runs a request it hasn't handled.
+    "prepare_request": "",
 }
 
 RULE_MODES = ("escu", "none")

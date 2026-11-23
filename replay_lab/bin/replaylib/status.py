@@ -11,7 +11,7 @@ import urllib.parse
 
 PATH = "/servicesNS/nobody/replay_lab/storage/collections/data/replay_lab_status"
 FIELDS = ("state", "at", "index", "events", "loop", "segment", "position", "loop_seconds", "playing",
-          "next_start", "next_start_text", "mode", "skipped_seconds", "run_on", "export")
+          "next_start", "next_start_text", "mode", "skipped_seconds", "run_on", "export", "prepare")
 
 
 class StatusKv:

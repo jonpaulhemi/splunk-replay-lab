@@ -115,6 +115,13 @@ def _segments(text):
     return " ".join(f"{start}-{end}" for start, end in pairs)
 
 
+def _prepare_request(text):
+    from .prepare import parse_request
+    if not parse_request(text):
+        raise ValueError("<epoch>:<steps>, steps from setup, export, assets")
+    return text.strip()
+
+
 EDITABLE = {
     "enabled": _boolean,
     "run_on": None,  # checked against the member list
@@ -130,6 +137,7 @@ EDITABLE = {
     "window_start": _optional_epoch,
     "window_end": _optional_epoch,
     "segments": _segments,
+    "prepare_request": _prepare_request,
 }
 
 

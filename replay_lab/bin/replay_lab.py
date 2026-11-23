@@ -14,7 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from replaylib import prepare  # noqa: E402
 from replaylib.ledger import KvLedger  # noqa: E402
+from replaylib.splunkd import Client  # noqa: E402
 from replaylib.rules import Rest, Rules  # noqa: E402
 from replaylib.runner import SCHEME, Runner  # noqa: E402
 from replaylib.status import StatusKv  # noqa: E402
@@ -67,7 +69,9 @@ def main(argv):
     checkpoint_dir = root.findtext("checkpoint_dir") or "."
     app_dir = Path(__file__).resolve().parent.parent
     log = status_writer(dataset)
-    rest = Rest(root.findtext("server_uri") or "https://127.0.0.1:8089", root.findtext("session_key") or "")
+    server_uri = root.findtext("server_uri") or "https://127.0.0.1:8089"
+    session_key = root.findtext("session_key") or ""
+    rest = Rest(server_uri, session_key)
     server = root.findtext("server_host") or ""
     kv = StatusKv(rest, dataset, server)
 
@@ -83,7 +87,10 @@ def main(argv):
     runner = Runner(app_dir, Path(checkpoint_dir) / f"{dataset}.json", sys.stdout,
                     status=status, now=time.time, sleep=time.sleep, rules=rules,
                     server_name=server, dataset=dataset,
-                    ledger=lambda: KvLedger(dataset, rest))
+                    ledger=lambda: KvLedger(dataset, rest),
+                    # splunkd on this box, with its own cert: the call never leaves the box
+                    prepare=lambda cfg, steps, progress: prepare.run(
+                        Client(server_uri, session_key=session_key, verify=False), app_dir, cfg, steps, progress))
     runner.run()
     return 0
 

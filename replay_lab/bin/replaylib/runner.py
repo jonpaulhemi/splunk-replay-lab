@@ -10,11 +10,13 @@ skipped rather than flooded, and logged.
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from . import config as config_mod
+from . import prepare as prepare_mod
 from . import schedule as schedule_mod
 from .engine import Engine
 from .ledger import LocalLedger
@@ -64,7 +66,8 @@ class Runner:
     """Plays one dataset. Each dataset has its own input instance, checkpoint and status log."""
 
     def __init__(self, app_dir, checkpoint_path, out, status=None, now=time.time, sleep=time.sleep,
-                 on_wrap=None, data_dir=None, rules=None, server_name=None, dataset=None, ledger=None):
+                 on_wrap=None, data_dir=None, rules=None, server_name=None, dataset=None, ledger=None,
+                 prepare=None):
         if not dataset:
             raise ValueError("Runner needs a dataset name")
         self.app_dir = Path(app_dir)
@@ -82,6 +85,10 @@ class Runner:
         self.rules = rules or (lambda cfg: None)  # cfg -> Rules, or None when there's no splunkd
         # () -> the ledger of who holds which rule: KvLedger on splunkd; default, this checkpoint
         self.ledger_factory = ledger
+        # (cfg, steps, progress) -> summary: runs Prepare (prepare.run with a splunkd client); None = ignore requests
+        self.prepare_factory = prepare
+        self._job = None
+        self._progress = {}
         self.state = self.checkpoint.load()
         self._dataset = None
         self._opened = False
@@ -107,6 +114,8 @@ class Runner:
         if run_on and self.server_name and _short(run_on) != _short(self.server_name):
             # Another member plays the replay; this one stays out of the way (no events, no rules).
             self.status({"state": "standby", "at": now, "run_on": run_on, "server": self.server_name})
+            return 0
+        if self._prepare(cfg, now):
             return 0
         rules = self.rules(cfg)
         if getattr(cfg, "rules_mode", "escu") == "none":
@@ -173,6 +182,50 @@ class Runner:
                      **engine.status(now), "skipped_seconds": skipped, "wrapped": wrapped,
                      "export": {"ready": True, "segments": len(data)}})
         return len(events)
+
+    def _prepare(self, cfg, now):
+        """Start a new Prepare request, or report one that is running. True while one runs.
+
+        A request is new when it differs from the last one this member handled. It is refused
+        while the dataset is on, so a re-export never swaps files under a running replay."""
+        if self._job is not None and self._job.is_alive():
+            self.status({"state": "preparing", "at": now, "prepare": dict(self._progress)})
+            return True
+        if self._job is not None:  # just finished
+            self._job = None
+            self.status({"state": "prepared", "at": now, "prepare": dict(self._progress)})
+        request = cfg.replay.get("prepare_request", "").strip()
+        if not request or request == self.state.get("prepare_handled") or self.prepare_factory is None:
+            return False
+        self.state["prepare_handled"] = request
+        self.checkpoint.save(self.state)
+        parsed = prepare_mod.parse_request(request)
+        if parsed is None:
+            self.status({"state": "prepare_refused", "at": now, "error": f"malformed prepare_request {request!r}"})
+            return False
+        if cfg.enabled:
+            self.status({"state": "prepare_refused", "at": now,
+                         "error": "switch the dataset off before Prepare; a re-export can't swap files under a replay"})
+            return False
+        _, steps = parsed
+        self._progress = {"request": request, "steps": steps, "log": []}
+        self._dataset = None  # the export may change under us
+
+        def progress(record):
+            log = self._progress["log"]
+            log.append(record)
+            del log[:-50]  # the latest records are enough for the page
+
+        def job():
+            try:
+                self._progress["summary"] = self.prepare_factory(cfg, steps, progress)
+            except Exception as e:  # never kills the input
+                self._progress["summary"] = {"ok": False, "error": str(e)}
+
+        self._job = threading.Thread(target=job, name=f"prepare-{self.name}", daemon=True)
+        self._job.start()
+        self.status({"state": "preparing", "at": now, "prepare": dict(self._progress)})
+        return True
 
     def _ledger(self):
         if self.ledger_factory is not None:
