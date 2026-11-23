@@ -87,11 +87,19 @@ def test_good_settings_are_normalised():
     ("enabled", "maybe"), ("run_on", "sh9"), ("schedule", "weekly"), ("daily_start", "9am"),
     ("daily_start", "24:00"), ("schedule_timezone", "US/Eastrn"), ("anchor", "soon"), ("tick_seconds", "1"),
     ("max_catchup_seconds", "-5"), ("rules_mode", "falcon"), ("index", "Bad Index"), ("data_dir", "relative/x"),
-    ("data_dir", "/opt/../etc"), ("search", "index=*"), ("label", "renamed")])
+    ("data_dir", "/opt/../etc"), ("search", "index=*"), ("label", "renamed"),
+    ("segments", "0-100 200-250"), ("segments", "100-50"), ("segments", "abc"), ("window_start", "x")])
 def test_a_bad_or_unknown_field_is_refused_by_name(field, value):
     with pytest.raises(settings.Invalid) as error:
         settings.validate({field: value}, ["sh1", "sh2"])
     assert list(error.value.errors) == [field]
+
+
+def test_segments_and_windows_are_checked_and_tidied():
+    assert settings.validate({"segments": "0-100,\n200-300"}, []) == {"segments": "0-100 200-300"}
+    with pytest.raises(settings.Invalid) as error:
+        settings.validate({"window_start": "200", "window_end": "100"}, [])
+    assert list(error.value.errors) == ["window_end"]
 
 
 def test_an_empty_member_means_any_server_the_app_is_on():

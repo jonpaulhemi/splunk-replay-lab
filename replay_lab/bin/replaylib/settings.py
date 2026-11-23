@@ -100,6 +100,21 @@ def _data_dir(text):
     return value
 
 
+def _segments(text):
+    pairs = []
+    for item in text.replace(",", " ").split():
+        start, sep, end = item.partition("-")
+        try:
+            pairs.append((int(start), int(end)))
+        except ValueError:
+            raise ValueError("start-end epoch pairs, such as 1503532800-1503619200") from None
+        if not sep or pairs[-1][1] <= pairs[-1][0]:
+            raise ValueError(f"{item}: the end must come after the start")
+    if len({end - start for start, end in pairs}) > 1:
+        raise ValueError("every segment must be the same length")
+    return " ".join(f"{start}-{end}" for start, end in pairs)
+
+
 EDITABLE = {
     "enabled": _boolean,
     "run_on": None,  # checked against the member list
@@ -112,6 +127,9 @@ EDITABLE = {
     "rules_mode": _choice("escu", "none"),
     "index": _index,
     "data_dir": _data_dir,
+    "window_start": _optional_epoch,
+    "window_end": _optional_epoch,
+    "segments": _segments,
 }
 
 
@@ -137,6 +155,9 @@ def validate(form, members):
             out[key] = EDITABLE[key](text)
         except ValueError as e:
             errors[key] = str(e)
+    start, end = out.get("window_start"), out.get("window_end")
+    if start and end and int(end) <= int(start):
+        errors["window_end"] = "must come after window_start"
     if errors:
         raise Invalid(errors)
     return out

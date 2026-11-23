@@ -1,0 +1,8 @@
+#replay-settings table.rl { width: 100%; border-collapse: collapse; }
+#replay-settings table.rl th, #replay-settings table.rl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #ddd; vertical-align: top; }
+#replay-settings .rl-state { font-weight: 600; }
+#replay-settings .rl-state.error, #replay-settings .rl-error { color: #b3261e; }
+#replay-settings .rl-state.playing { color: #1b6e3a; }
+#replay-settings form.rl-form { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; max-width: 640px; margin: 8px 0 16px; }
+#replay-settings form.rl-form .rl-field-error { grid-column: 2; color: #b3261e; font-size: 12px; }
+#replay-settings .rl-note { color: #666; font-size: 12px; }

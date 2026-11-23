@@ -1,0 +1,11 @@
+<dashboard version="1.1" script="replay_settings.js" stylesheet="replay_settings.css" hideEdit="true">
+  <label>Datasets</label>
+  <description>Every dataset pack: its state, progress and export, and its settings. Admins only.</description>
+  <row>
+    <panel>
+      <html>
+        <div id="replay-settings">Loading datasets...</div>
+      </html>
+    </panel>
+  </row>
+</dashboard>

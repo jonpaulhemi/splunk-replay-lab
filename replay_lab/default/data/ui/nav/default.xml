@@ -1,4 +1,5 @@
 <nav>
-  <view name="replay_health" default="true"/>
+  <view name="replay_settings" default="true"/>
+  <view name="replay_health"/>
   <view name="search"/>
 </nav>
