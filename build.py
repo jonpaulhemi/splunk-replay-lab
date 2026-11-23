@@ -13,7 +13,12 @@ The app skeleton is replay_lab/. Each folder datasets/<name>/ with a pack.conf i
   lookups/           copied into the app's lookups/
   hooks/             copied into the app's bin/datasets/<name>/
 Every pack also gets a replay_lab://<name> input, and its live index in indexes.conf unless the
-pack defines that index itself.
+pack defines that index itself. Anything else in the pack folder (a README, loading tools under
+load/) stays out of the package.
+
+The build refuses a pack with a stanza or key given twice, a live index that is invalid, the
+source index, or another pack's, a schedule the replay can't build, segments of unequal length,
+no feeds, or a hook that doesn't import.
 
 Two builds of one commit are byte-identical: entries are sorted, owners and times are fixed
 (SOURCE_DATE_EPOCH, else the last commit's time), and gzip writes no name or time.
@@ -22,6 +27,7 @@ Two builds of one commit are byte-identical: entries are sorted, owners and time
 import argparse
 import configparser
 import gzip
+import importlib.util
 import io
 import os
 import re
@@ -39,6 +45,7 @@ MERGED = ("props.conf", "transforms.conf", "savedsearches.conf", "inputs.conf", 
 SKIP = re.compile(r"^(local|data)(/|$)|(^|/)__pycache__(/|$)|\.pyc$|(^|/)\.")
 HEADER = re.compile(r"^\[(.*)\]\s*$")
 NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+INDEX = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class BuildError(Exception):
@@ -76,8 +83,8 @@ def pack_stanzas(name, text):
     return "\n".join(out).rstrip("\n") + "\n"
 
 
-def parse(text, source):
-    parser = configparser.RawConfigParser(strict=False, interpolation=None, delimiters=("=",),
+def parse(text, source, strict=False):
+    parser = configparser.RawConfigParser(strict=strict, interpolation=None, delimiters=("=",),
                                           comment_prefixes=("#",), empty_lines_in_values=False)
     parser.optionxform = str
     try:
@@ -146,10 +153,18 @@ def stage(out_dir, root=ROOT):
             check_merge(seen[name], text, f"{APP}/default/{name}")
     replay_conf = ["# Written by build.py from datasets/<name>/pack.conf. Change settings in local/, or\n"
                    "# from the settings page; never here.\n"]
+    live_indexes = {}
     for name, folder in packs(root):
         stanzas = pack_stanzas(name, (folder / "pack.conf").read_text())
-        parsed = parse(stanzas, f"datasets/{name}/pack.conf")
+        parsed = parse(stanzas, f"datasets/{name}/pack.conf", strict=True)  # a stanza or key given twice fails
         index = (parsed.get(f"dataset:{name}", "index", fallback="") or f"{name}_live").strip()
+        if not INDEX.match(index):
+            raise BuildError(f"datasets/{name}/pack.conf: live index {index!r} isn't a valid index name")
+        if index in live_indexes:
+            raise BuildError(f"datasets/{name}/pack.conf: live index {index} is also {live_indexes[index]}'s")
+        if index == (parsed.get(f"dataset:{name}", "source_index", fallback="") or name).strip():
+            raise BuildError(f"datasets/{name}/pack.conf: the live index must differ from the source index")
+        live_indexes[index] = name
         replay_conf.append(f"\n# ---- {name} (from datasets/{name}/pack.conf) ----\n" + stanzas)
         for conf_name in MERGED:
             source = folder / conf_name
@@ -167,10 +182,51 @@ def stage(out_dir, root=ROOT):
         if (folder / "hooks").is_dir():
             _copy_tree(folder / "hooks", app / "bin" / "datasets" / name)
     (default / "replay_lab.conf").write_text("".join(replay_conf))
+    validate(app, [name for name, _ in packs(root)])
     for name, text in texts.items():
         if text:
             (default / name).write_text(text.lstrip("\n"))
     return app
+
+
+def _load_module(name, path, bin_dir):
+    sys.path.insert(0, str(bin_dir))
+    writes, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # no __pycache__ in the package
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.dont_write_bytecode = writes
+        sys.path.remove(str(bin_dir))
+
+
+def validate(app, names):
+    """Load each dataset the way the input will, so a bad pack fails the build, not the replay."""
+    bin_dir = Path(app) / "bin"
+    config = _load_module("_replay_lab_config", bin_dir / "replaylib" / "config.py", bin_dir)
+    schedule = _load_module("_replay_lab_schedule", bin_dir / "replaylib" / "schedule.py", bin_dir)
+    for name in names:
+        where = f"datasets/{name}/pack.conf"
+        try:
+            cfg = config.load(app, name)
+            spans = config.segments(cfg.replay)
+            if not spans and cfg.replay.get("window_start", "").strip() and cfg.replay.get("window_end", "").strip():
+                spans = [(int(float(cfg.replay["window_start"])), int(float(cfg.replay["window_end"])))]
+            if any(end <= start for start, end in spans):
+                raise ValueError("a window or segment ends before it starts")
+            schedule.build(cfg.replay, 0, (spans[0][1] - spans[0][0]) if spans else 3600)
+        except Exception as e:
+            raise BuildError(f"{where}: {e}") from None
+        if not cfg.feeds:
+            raise BuildError(f"{where}: no [feed:<name>] stanzas")
+        hooks = bin_dir / "datasets" / name
+        for hook in sorted(hooks.glob("*.py")) if hooks.is_dir() else []:
+            try:
+                _load_module(f"_hook_{name}_{hook.stem}", hook, bin_dir)
+            except Exception as e:
+                raise BuildError(f"datasets/{name}/hooks/{hook.name} doesn't import: {e}") from None
 
 
 def source_date_epoch(root=ROOT):

@@ -214,3 +214,48 @@ def test_events_carry_their_datasets_stanza(tmp_path, monkeypatch):
 def test_a_runner_without_a_dataset_is_refused(tmp_path):
     with pytest.raises(ValueError):
         Runner(tmp_path, tmp_path / "c.json", io.StringIO())
+
+
+# --- malformed packs fail the build with a message naming the pack ---
+
+BAD_PACKS = {
+    "a feed given twice": (PACK + "\n[feed:one]\nsearch = again\n", "already exists"),
+    "a key given twice": (PACK.replace("label = Alpha", "label = Alpha\nlabel = Again"), "already exists"),
+    "an invalid live index": (PACK.replace("label = Alpha", "label = Alpha\nindex = Bad Index"), "valid index"),
+    "live index = source index": (PACK.replace("label = Alpha", "label = Alpha\nindex = alpha"), "differ"),
+    "a bad schedule": (PACK.replace("label = Alpha", "label = Alpha\nschedule = weekly"), "loop or daily"),
+    "a bad time zone": (PACK.replace("label = Alpha", "label = Alpha\nschedule = daily\nschedule_timezone = Mars/Base"),
+                        "pack.conf"),
+    "unequal segments": (PACK.replace("label = Alpha", "label = Alpha\nsegments = 0-100 200-250"), "same length"),
+    "a window that ends first": (PACK.replace("label = Alpha", "label = Alpha\nwindow_start = 200\nwindow_end = 100"),
+                                 "ends before"),
+    "no feeds": ("[dataset]\nlabel = Alpha\n", "no [feed"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(BAD_PACKS))
+def test_a_malformed_pack_fails_the_build_naming_it(tmp_path, case):
+    text, message = BAD_PACKS[case]
+    root = make_repo(tmp_path, {"alpha": {"pack.conf": text}})
+    with pytest.raises(build.BuildError) as error:
+        build.stage(tmp_path / "out", root)
+    assert "datasets/alpha" in str(error.value) and message in str(error.value)
+
+
+def test_two_packs_with_one_live_index_fail_the_build(tmp_path):
+    shared = PACK.replace("label = Alpha", "label = Alpha\nindex = shared_live")
+    root = make_repo(tmp_path, {"alpha": {"pack.conf": shared}, "beta": {"pack.conf": shared}})
+    with pytest.raises(build.BuildError, match="shared_live is also alpha's"):
+        build.stage(tmp_path / "out", root)
+
+
+def test_a_hook_that_does_not_import_fails_the_build(tmp_path):
+    root = make_repo(tmp_path, {"alpha": {"pack.conf": PACK, "hooks/assets.py": "import not_a_module_anywhere\n"}})
+    with pytest.raises(build.BuildError, match="hooks/assets.py doesn't import"):
+        build.stage(tmp_path / "out", root)
+
+
+def test_a_packs_loading_tools_and_readme_stay_out_of_the_package(tmp_path):
+    root = make_repo(tmp_path, {"alpha": {"pack.conf": PACK, "README.md": "x\n", "load/convert.py": "x = 1\n"}})
+    app = build.stage(tmp_path / "out", root)
+    assert not list(app.rglob("convert.py")) and not list(app.rglob("README.md"))
