@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO))
 import build  # noqa: E402
 from replaylib import config as config_mod  # noqa: E402
 from replaylib import store  # noqa: E402
+from replaylib.ledger import LocalLedger  # noqa: E402
 from replaylib.runner import Runner as _Runner  # noqa: E402
 from replaylib.timeshift import Shifter  # noqa: E402
 
@@ -48,6 +49,11 @@ class PackConf:
 
     def read_text(self):
         return self.source.read_text()
+
+
+def local(saved):
+    """The checkpoint ledger over a plain {name: original} dict."""
+    return LocalLedger(DATASET, {"rules": saved}, lambda: None)
 
 
 def data_of(app):
@@ -669,14 +675,14 @@ def test_a_rule_that_throttles_longer_than_a_loop_is_shortened_while_on_and_put_
     ])
     rules = Rules(rest, ["@risk_rule", "ESCU - Short - Rule"], suppress_period="21600")
     saved = {}
-    list(rules.enable(saved))
+    list(rules.enable(local(saved), DATASET))
     risk = rest.searches["Risk - 24 Hour Risk Threshold Exceeded - Rule"]
 
     assert risk["alert.suppress.period"] == "21600s" and risk["disabled"] == "0"
     assert rest.searches["ESCU - Short - Rule"]["alert.suppress.period"] == "3600"
-    assert list(rules.enable(saved)) == []  # already shortened: no more changes
+    assert list(rules.enable(local(saved), DATASET)) == []  # already shortened: no more changes
 
-    list(rules.put_back(saved))
+    list(rules.put_back(local(saved), DATASET))
     assert risk["alert.suppress.period"] == "86400s" and risk["disabled"] == "0" and risk["is_scheduled"] == "1"
     assert rest.searches["ESCU - Short - Rule"]["disabled"] == "1" and saved == {}
 
@@ -750,15 +756,15 @@ def test_the_risk_rule_skips_findings_on_placeholder_entities_while_on_and_is_pu
     ])
     rules = Rules(rest, ["@risk_rule", "ESCU - Other - Rule"], skip_risk_objects=["unknown", "null"])
     saved = {}
-    list(rules.enable(saved))
+    list(rules.enable(local(saved), DATASET))
     risk = rest.searches["Risk - 24 Hour Risk Threshold Exceeded - Rule"]
 
     assert risk["search"].startswith(RISK_SPL + " | where NOT lower(coalesce(risk_object, normalized_risk_object")
     assert 'IN ("unknown", "null")' in risk["search"]
     assert rest.searches["ESCU - Other - Rule"]["search"] == "| tstats count"  # only the risk rule
-    assert list(rules.enable(saved)) == []  # already filtered: no more changes
+    assert list(rules.enable(local(saved), DATASET)) == []  # already filtered: no more changes
 
-    list(rules.put_back(saved))
+    list(rules.put_back(local(saved), DATASET))
     assert risk["search"] == RISK_SPL and risk["disabled"] == "0" and saved == {}
 
 
@@ -1015,14 +1021,14 @@ def test_the_risk_rule_sums_the_workday_while_on_and_gets_its_window_back():
     ])
     rules = Rules(rest, ["@risk_rule", "ESCU - Other - Rule"], suppress_period="72000", risk_earliest="-8h")
     saved = {}
-    list(rules.enable(saved))
+    list(rules.enable(local(saved), DATASET))
     risk = rest.searches["Risk - 24 Hour Risk Threshold Exceeded - Rule"]
 
     assert (risk["dispatch.earliest_time"], risk["alert.suppress.period"]) == ("-8h", "72000s")
     assert rest.searches["ESCU - Other - Rule"]["dispatch.earliest_time"] == "-70m@m"  # only the risk rule
-    assert list(rules.enable(saved)) == []  # already applied: no more changes
+    assert list(rules.enable(local(saved), DATASET)) == []  # already applied: no more changes
 
-    list(rules.put_back(saved))
+    list(rules.put_back(local(saved), DATASET))
     assert (risk["dispatch.earliest_time"], risk["alert.suppress.period"]) == ("-24h", "86400s") and saved == {}
 
 
@@ -1084,14 +1090,14 @@ def test_rules_mode_none_sends_data_and_puts_back_rules_from_an_earlier_escu_run
         def __init__(self):
             self.calls = []
 
-        def enable(self, saved):
+        def enable(self, ledger, dataset):
             self.calls.append("enable")
-            saved["ESCU - X"] = {"disabled": "1"}
+            ledger.saved["ESCU - X"] = {"app": "a", "disabled": "1"}
             yield
 
-        def put_back(self, saved):
+        def put_back(self, ledger, dataset):
             self.calls.append("put_back")
-            saved.clear()
+            ledger.saved.clear()
             yield
 
         def reset(self, k):

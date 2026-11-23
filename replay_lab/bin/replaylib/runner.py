@@ -17,6 +17,7 @@ from xml.sax.saxutils import escape
 from . import config as config_mod
 from . import schedule as schedule_mod
 from .engine import Engine
+from .ledger import LocalLedger
 from .store import open_all
 
 SCHEME = "replay_lab"
@@ -63,7 +64,7 @@ class Runner:
     """Plays one dataset. Each dataset has its own input instance, checkpoint and status log."""
 
     def __init__(self, app_dir, checkpoint_path, out, status=None, now=time.time, sleep=time.sleep,
-                 on_wrap=None, data_dir=None, rules=None, server_name=None, dataset=None):
+                 on_wrap=None, data_dir=None, rules=None, server_name=None, dataset=None, ledger=None):
         if not dataset:
             raise ValueError("Runner needs a dataset name")
         self.app_dir = Path(app_dir)
@@ -79,6 +80,8 @@ class Runner:
         self.sleep = sleep
         self.on_wrap = on_wrap or (lambda loop: None)
         self.rules = rules or (lambda cfg: None)  # cfg -> Rules, or None when there's no splunkd
+        # () -> the ledger of who holds which rule: KvLedger on splunkd; default, this checkpoint
+        self.ledger_factory = ledger
         self.state = self.checkpoint.load()
         self._dataset = None
         self._opened = False
@@ -164,29 +167,37 @@ class Runner:
                      **engine.status(now), "skipped_seconds": skipped, "wrapped": wrapped})
         return len(events)
 
+    def _ledger(self):
+        if self.ledger_factory is not None:
+            return self.ledger_factory()
+        return LocalLedger(self.name, self.state, lambda: self.checkpoint.save(self.state))
+
     def _rules_on(self, rules, names):
         if rules is None or self.state.get("rules_for") == names:
             return
-        saved = self.state.setdefault("rules", {})
         try:
-            if "rules_for" in self.state:  # the settings changed: put everything back, then apply the new ones
-                for _ in rules.put_back(saved):
-                    self.checkpoint.save(self.state)
+            ledger = self._ledger()
+            if "rules_for" in self.state:  # the settings changed: let go of everything, then apply the new ones
+                for _ in rules.put_back(ledger, self.name):
+                    pass
                 self.state.pop("rules_for")
-            for _ in rules.enable(saved):
-                self.checkpoint.save(self.state)  # the original is on disk before the change
+            self.state["holding"] = True  # on disk before the first change, so a crash still puts back
+            self.checkpoint.save(self.state)
+            for _ in rules.enable(ledger, self.name):
+                pass
             self.state["rules_for"] = names
             self.checkpoint.save(self.state)
         except Exception as e:  # retried next tick
             self.status({"rules_error": str(e)})
 
     def _rules_off(self, rules):
-        if rules is None or not (self.state.get("rules") or "rules_for" in self.state):
+        if rules is None or not (self.state.get("rules") or "rules_for" in self.state or self.state.get("holding")):
             return
         try:
-            for _ in rules.put_back(self.state.setdefault("rules", {})):
-                self.checkpoint.save(self.state)
+            for _ in rules.put_back(self._ledger(), self.name):
+                pass
             self.state.pop("rules_for", None)
+            self.state.pop("holding", None)
             self.checkpoint.save(self.state)
         except Exception as e:
             self.status({"rules_error": str(e)})

@@ -9,3 +9,8 @@ export = system
 
 [lookups]
 export = system
+
+# The rule ledger is the app's own: admins and the app's input only.
+[collections]
+access = read : [ admin ], write : [ admin ]
+export = none

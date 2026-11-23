@@ -2,7 +2,9 @@
 replay is on, put them back as they were when it's switched off, and clear their state when the
 loop wraps so first-seen and throttled rules fire on every loop.
 
-Original settings are kept in the replay checkpoint, so a put-back survives a restart.
+Original settings and who holds each rule are kept in a ledger (see ledger.py): the shared
+replay_lab_rules KV store collection, so a put-back survives a restart and datasets that share a
+rule don't switch it off under each other.
 """
 
 import fnmatch
@@ -40,10 +42,15 @@ class Rest:
         # splunkd's own cert on localhost is often self-signed; the call never leaves the box.
         self.context = ssl.create_default_context() if verify else ssl._create_unverified_context()
 
-    def call(self, method, path, query=None, form=None, timeout=120):
+    def call(self, method, path, query=None, form=None, timeout=120, body=None):
+        """form: a urlencoded body; body: a JSON one (the KV store's)."""
         url = self.base + path + ("?" + urllib.parse.urlencode(query, doseq=True) if query else "")
+        headers = {"Authorization": self.auth}
         data = urllib.parse.urlencode(form, doseq=True).encode() if form is not None else None
-        request = urllib.request.Request(url, data=data, method=method, headers={"Authorization": self.auth})
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, context=self.context, timeout=timeout) as response:
                 return response.status, _parse(response.read())
@@ -134,34 +141,57 @@ class Rules:
 
     # -- on / off --
 
-    def enable(self, saved):
-        """Enable and schedule every listed rule; `saved` (name -> original) is updated first."""
+    def enable(self, ledger, dataset):
+        """Enable and schedule every listed rule for `dataset`, recording originals in `ledger` first.
+
+        A rule some other dataset already changed is joined (its original is kept as recorded), so it
+        stays on until the last dataset holding it switches off. With different tuning per dataset,
+        the latest dataset to switch on sets it."""
         missing = []
         for listed in self.names:
             entry = self._entry(listed)
             if entry is None:
                 missing.append(listed)
                 continue
-            name, app, content = entry["name"], entry["acl"]["app"], entry["content"]
-            on = not _truthy(content.get("disabled")) and _truthy(content.get("is_scheduled"))
-            period = _seconds(content.get("alert.suppress.period"))
-            shorten = (self.suppress_period is not None and _truthy(content.get("alert.suppress"))
-                       and period is not None and period > self.suppress_period)
-            search = content.get("search") or ""
-            skip = listed == RISK_RULE and bool(self.skip_risk_objects) and SKIP_MARK not in search
-            window = {key: value for key, value in self.risk_settings.items()
-                      if listed == RISK_RULE and content.get(key) != value}
-            if (on or name in saved) and not shorten and not skip and not window:
-                continue
-            original = saved.setdefault(name, {"app": app, "disabled": "1" if _truthy(content.get("disabled")) else "0",
-                                               "is_scheduled": "1" if _truthy(content.get("is_scheduled")) else "0"})
-            if shorten:
-                original.setdefault("alert.suppress.period", content.get("alert.suppress.period"))
-            if skip:
-                original.setdefault("search", search)
-            for key in window:
-                original.setdefault(key, content.get(key) or "")
-            yield name  # caller checkpoints before the change
+            name = entry["name"]
+            if ledger.change(name, lambda record, listed=listed: self._take(record, listed, dataset)):
+                yield name  # changed on splunkd
+        if missing:
+            self.log({"rules_missing": missing})
+
+    def _take(self, record, listed, dataset):
+        entry = self._entry(listed)  # read again under the ledger's claim: what is on splunkd now
+        if entry is None:
+            return record, None
+        name, app, content = entry["name"], entry["acl"]["app"], entry["content"]
+        on = not _truthy(content.get("disabled")) and _truthy(content.get("is_scheduled"))
+        period = _seconds(content.get("alert.suppress.period"))
+        shorten = (self.suppress_period is not None and _truthy(content.get("alert.suppress"))
+                   and period is not None and period > self.suppress_period)
+        search = content.get("search") or ""
+        skip = listed == RISK_RULE and bool(self.skip_risk_objects) and SKIP_MARK not in search
+        window = {key: value for key, value in self.risk_settings.items()
+                  if listed == RISK_RULE and content.get(key) != value}
+        changed = bool(record["original"])  # some dataset changed it and hasn't put it back
+        if (on or changed) and not shorten and not skip and not window:
+            if changed and dataset not in record["holders"]:
+                record["holders"].append(dataset)  # someone else switched it on: hold it too
+            return record, None
+        original = record["original"]
+        if not changed:
+            record["app"] = app
+            original.update({"disabled": "1" if _truthy(content.get("disabled")) else "0",
+                             "is_scheduled": "1" if _truthy(content.get("is_scheduled")) else "0"})
+        if shorten:
+            original.setdefault("alert.suppress.period", content.get("alert.suppress.period"))
+        if skip:
+            original.setdefault("search", search)
+        for key in window:
+            original.setdefault(key, content.get(key) or "")
+        if dataset not in record["holders"]:
+            record["holders"].append(dataset)
+
+        def apply():  # after the record is saved
             if window:
                 self._set(app, name, window)
             if skip:
@@ -171,24 +201,33 @@ class Rules:
             if not on:
                 self._set(app, name, {"is_scheduled": "1"})
                 self._set(app, name, {"disabled": "0"})
-        if missing:
-            self.log({"rules_missing": missing})
+        return record, apply
 
-    def put_back(self, saved):
-        for name in sorted(saved):
-            original = saved[name]
-            restore = {key: original[key] for key in ("dispatch.earliest_time", "alert.suppress.fields")
-                       if key in original}
-            if restore:
-                self._set(original["app"], name, restore)
-            if original.get("search"):
-                self._set(original["app"], name, {"search": original["search"]})
-            if original.get("alert.suppress.period"):
-                self._set(original["app"], name, {"alert.suppress.period": original["alert.suppress.period"]})
-            self._set(original["app"], name, {"disabled": original["disabled"]})
-            self._set(original["app"], name, {"is_scheduled": original["is_scheduled"]})
-            del saved[name]
+    def put_back(self, ledger, dataset):
+        """Let go of every rule `dataset` holds; the last holder puts the original back."""
+        for name in ledger.held():
+            ledger.change(name, lambda record, name=name: self._release(record, name, dataset))
             yield name
+
+    def _release(self, record, name, dataset):
+        holders = [h for h in record["holders"] if h != dataset]
+        if holders or not record["original"]:
+            record["holders"] = holders
+            return record, None
+        original, app = record["original"], record["app"]
+        # Put back before the record is cleared: a crash in between leaves the record, and the next
+        # tick puts back again.
+        restore = {key: original[key] for key in ("dispatch.earliest_time", "alert.suppress.fields")
+                   if key in original}
+        if restore:
+            self._set(app, name, restore)
+        if original.get("search"):
+            self._set(app, name, {"search": original["search"]})
+        if original.get("alert.suppress.period"):
+            self._set(app, name, {"alert.suppress.period": original["alert.suppress.period"]})
+        self._set(app, name, {"disabled": original["disabled"]})
+        self._set(app, name, {"is_scheduled": original["is_scheduled"]})
+        return {"name": name, "app": "", "original": {}, "holders": []}, None
 
     # -- loop wrap --
 

@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from replaylib.ledger import KvLedger  # noqa: E402
 from replaylib.rules import Rest, Rules  # noqa: E402
 from replaylib.runner import SCHEME, Runner  # noqa: E402
 
@@ -74,7 +75,8 @@ def main(argv):
                      risk_suppress_fields=cfg.risk_suppress_fields)
     runner = Runner(app_dir, Path(checkpoint_dir) / f"{dataset}.json", sys.stdout,
                     status=status, now=time.time, sleep=time.sleep, rules=rules,
-                    server_name=root.findtext("server_host") or "", dataset=dataset)
+                    server_name=root.findtext("server_host") or "", dataset=dataset,
+                    ledger=lambda: KvLedger(dataset, rest))
     runner.run()
     return 0
 
