@@ -8,7 +8,7 @@ README has the dataset-specific parts.
 
 | Component | Versions |
 |---|---|
-| Splunk Enterprise | 10.4.3 and 10.6.1.1 |
+| Splunk Enterprise | 10.4.3 and 10.6.1.1 <!-- scrub: ok (a version, not an address) --> |
 | ES | 8.6.1 and 8.8.0 |
 | ESCU | 6.10.0 |
 | Splunk_SA_CIM | 8.7.0 and 8.8 |
