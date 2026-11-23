@@ -1,0 +1,5 @@
+{"_time": 1534778054.0, "sourcetype": "openports", "search_time_sourcetype": "openPorts", "source": "openPorts", "host": "mars.i-08e52f8b5a034012d", "_raw": "tcp       22"}
+{"_time": 1534778054.0, "sourcetype": "openports", "search_time_sourcetype": "openPorts", "source": "openPorts", "host": "mars.i-08e52f8b5a034012d", "_raw": "tcp    48437"}
+{"_time": 1534778054.0, "sourcetype": "openports", "search_time_sourcetype": "openPorts", "source": "openPorts", "host": "mars.i-08e52f8b5a034012d", "_raw": "tcp      111"}
+{"_time": 1534778054.0, "sourcetype": "openports", "search_time_sourcetype": "openPorts", "source": "openPorts", "host": "mars.i-08e52f8b5a034012d", "_raw": "tcp     8889"}
+{"_time": 1534778054.0, "sourcetype": "openports", "search_time_sourcetype": "openPorts", "source": "openPorts", "host": "mars.i-08e52f8b5a034012d", "_raw": "udp      803"}

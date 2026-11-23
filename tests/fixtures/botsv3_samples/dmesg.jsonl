@@ -1,0 +1,5 @@
+{"_time": 1534775114.0, "sourcetype": "dmesg", "search_time_sourcetype": "dmesg", "source": "/var/log/dmesg", "host": "gacrux.i-09cbc261e84259b54", "_raw": "[    3.285975] random: dd: uninitialized urandom read (4096 bytes read)"}
+{"_time": 1534775114.0, "sourcetype": "dmesg", "search_time_sourcetype": "dmesg", "source": "/var/log/dmesg", "host": "gacrux.i-09cbc261e84259b54", "_raw": "[    3.259419] EXT4-fs (xvda1): re-mounted. Opts: (null)"}
+{"_time": 1534775114.0, "sourcetype": "dmesg", "search_time_sourcetype": "dmesg", "source": "/var/log/dmesg", "host": "gacrux.i-09cbc261e84259b54", "_raw": "[    3.225887] random: lvm: uninitialized urandom read (4 bytes read)"}
+{"_time": 1534775114.0, "sourcetype": "dmesg", "search_time_sourcetype": "dmesg", "source": "/var/log/dmesg", "host": "gacrux.i-09cbc261e84259b54", "_raw": "[    2.208085] mousedev: PS/2 mouse device common for all mice"}
+{"_time": 1534775114.0, "sourcetype": "dmesg", "search_time_sourcetype": "dmesg", "source": "/var/log/dmesg", "host": "gacrux.i-09cbc261e84259b54", "_raw": "[    2.113484] input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input5"}

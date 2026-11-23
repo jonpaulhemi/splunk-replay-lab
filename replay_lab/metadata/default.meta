@@ -1,0 +1,11 @@
+[]
+access = read : [ * ], write : [ admin ]
+export = none
+
+# ES's asset and identity merge searches run in SA-IdentityManagement, so the packs' lists
+# must be global.
+[transforms]
+export = system
+
+[lookups]
+export = system
