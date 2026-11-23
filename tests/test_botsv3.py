@@ -82,7 +82,7 @@ def winsec(t_text, code, extra=""):
             f"EventCode={code}\nEventType=0\nComputerName=FYODOR-L.froth.ly\n{extra}")
 
 
-# BOTSv3's Windows raw times are a 24-hour clock with an AM/PM suffix (#193); export
+# BOTSv3's Windows raw times are a 24-hour clock with an AM/PM suffix; export
 # results carry TA_windows' search-time sourcetype, WinEventLog.
 EVENTS = [
     {"t": FIRST + 60.0, "raw": winsec("08/19/2018 12:01:00 PM", 4624), "sourcetype": "WinEventLog",
@@ -330,7 +330,7 @@ IN_WINDOW = re.compile(r"Mon, 20 Aug|2018-08-(19|20)[T ]\d|08/(19|20)/2018|20/Au
 
 @pytest.mark.parametrize("sample", SAMPLES, ids=lambda p: p.stem)
 def test_real_botsv3_samples_keep_no_in_window_2018_time(sample):
-    """#193's sample lines, a few per sourcetype covering each timestamp format."""
+    """Real sample lines, a few per sourcetype covering each timestamp format."""
     shifter = Shifter(1534755600, 1534778999)
     offset = NOW - 1534755600
     for line in sample.read_text().splitlines():
@@ -364,7 +364,7 @@ def test_the_health_dashboard_has_a_search_in_every_panel(built):
     assert all((p.findtext(".//search/query") or "").strip() for p in panels)
 
 
-# --- relabel fixes (#197) ---
+# --- relabel fixes ---
 
 SYSMON = {"t": FIRST + 30.0, "sourcetype": "xmlwineventlog:microsoft-windows-sysmon/operational", "source": "WinEventLog:Microsoft-Windows-Sysmon/Operational",
           "host": "FYODOR-L", "raw": "<Event><System><EventID>1</EventID><TimeCreated SystemTime='2018-08-20T00:00:30.123456700Z'/>"
@@ -425,7 +425,7 @@ def test_a_translation_is_opt_in_and_marks_its_events_synthetic(relabel_lab, tmp
     assert "replay_lab_synthetic" not in out["xmlwineventlog:microsoft-windows-sysmon/operational"]["raw"]
 
 
-# --- rule set and reset on loop wrap (#198) ---
+# --- rule set and reset on loop wrap ---
 
 class FakeRest:
     """The saved-search and search-job endpoints the rule set calls."""
@@ -547,9 +547,9 @@ def test_state_is_cleared_only_when_the_loop_wraps(lab, tmp_path, rest):
                          "| makeresults | eval x=1"]
 
 
-# --- box setup (#194) ---
+# --- box setup ---
 
-# --- asset and identity lists (0.1.1) ---
+# --- asset and identity lists ---
 
 def test_the_lists_are_registered_with_es_and_shared_globally(built):
     import configparser
@@ -594,7 +594,7 @@ def test_a_raw_event_with_bytes_xml_cant_carry_still_makes_a_valid_stream():
     assert data.startswith("payload") and data.endswith("<&>\ufffd end")
 
 
-# --- in-text times the indexer reads in its own zone (0.1.5) ---
+# --- in-text times the indexer reads in its own zone ---
 
 FIRST_WINDOW = 1534755600
 
@@ -663,7 +663,7 @@ def test_winhostmon_takes_the_replays_time_at_index_time(built):
     assert re.search(r"^\[XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\]\nDATETIME_CONFIG = NONE$", props, re.M)
 
 
-# --- loop-wrap state: throttles and who's minute times (0.1.8) ---
+# --- loop-wrap state: throttles and who's minute times ---
 
 def test_a_rule_that_throttles_longer_than_a_loop_is_shortened_while_on_and_put_back():
     from replaylib.rules import Rules
@@ -692,7 +692,7 @@ def test_the_shipped_rules_clear_the_service_baseline_and_keep_es_throttles(buil
     cfg = config_mod.load(built, DATASET)
 
     assert cfg.reset_lookups == ["previously_seen_running_windows_services"]
-    # daily: the risk rule sums the workday (8 h) and throttles 20 h, so findings come in work hours (#208)
+    # daily: the risk rule sums the workday (8 h) and throttles 20 h, so findings come in work hours
     assert (cfg.risk_earliest, cfg.suppress_period) == ("-490m@m", "72000")
     assert cfg.risk_suppress_fields == "normalized_risk_object,risk_object_type"  # one finding per entity a day
 
@@ -741,7 +741,7 @@ def test_the_replay_keeps_the_exact_case_the_export_wrote():
     assert out["sourcetype"] == "WinEventLog:Security"
 
 
-# --- placeholder risk objects (0.1.14) ---
+# --- placeholder risk objects ---
 
 RISK_SPL = "| tstats sum(All_Risk.calculated_risk_score) as risk_score from datamodel=Risk.All_Risk | where risk_score>100"
 
@@ -794,7 +794,7 @@ def test_the_shipped_rules_skip_unknown_and_null_risk_objects(built):
     assert config_mod.load(built, DATASET).skip_risk_objects == ["unknown", "null"]
 
 
-# --- daily schedule: one workday a day at real speed (#210) ---
+# --- daily schedule: one workday a day at real speed ---
 
 from datetime import datetime as _dt  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
@@ -870,7 +870,7 @@ def test_a_gap_overnight_longer_than_the_catch_up_limit_skips_ahead(lab, tmp_pat
     assert [e["time"] for e in emitted(runner.out)] == [et(2026, 11, 13) + 3700]  # 9:01 was skipped
 
 
-# --- daily as the shipped default, and the upgrade from the loop (#211) ---
+# --- daily as the shipped default, and the upgrade from the loop ---
 
 def test_the_shipped_replay_plays_daily_at_9_am_eastern(built):
     cfg = config_mod.load(built, DATASET)
@@ -910,7 +910,7 @@ def test_dropping_suppress_period_on_upgrade_puts_the_24_hour_throttle_back(lab,
     rules_runner(lab, tmp_path, clock, rest).tick()
     assert risk["alert.suppress.period"] == "21600s" and "skip_risk_objects" in risk["search"]
 
-    conf.write_text(conf.read_text().replace("suppress_period = 21600\n", ""))  # 0.2.0 ships none
+    conf.write_text(conf.read_text().replace("suppress_period = 21600\n", ""))  # an earlier version shipped none
     clock.t = NOW + 60
     rules_runner(lab, tmp_path, clock, rest).tick()
 
@@ -936,7 +936,7 @@ def test_the_lab_never_changes_a_rules_alert_actions(lab, tmp_path, rest):
     assert not any(key.startswith("action.") for key in changed)
 
 
-# --- dashboard shows the schedule (#212) ---
+# --- dashboard shows the schedule ---
 
 def test_the_status_line_names_the_next_start_in_the_schedules_zone(lab, tmp_path):
     daily(lab)
@@ -995,7 +995,7 @@ def test_a_day_start_inside_skipped_downtime_still_resets_the_rules_state(lab, t
                          "| makeresults | eval x=1"]  # once, not once per missed day
 
 
-# --- leftover future-dated feeds (#213) ---
+# --- leftover future-dated feeds ---
 
 @pytest.mark.parametrize("sourcetype", ["aws:config:rule", "aws:rds:error", "code42:security", "code42:computer",
                                         "code42:user"])
@@ -1008,7 +1008,7 @@ def test_feeds_splunk_misdates_take_the_replays_time_at_index_time(sourcetype, b
 
 
 
-# --- risk rule sums the workday while the replay is on (0.2.2) ---
+# --- risk rule sums the workday while the replay is on ---
 
 def test_the_risk_rule_sums_the_workday_while_on_and_gets_its_window_back():
     from replaylib.rules import Rules
@@ -1054,7 +1054,7 @@ def test_a_new_risk_window_reaches_a_replay_that_is_already_on(lab, tmp_path, re
 
 
 
-# --- one risk finding per entity per day (0.2.4) ---
+# --- one risk finding per entity per day ---
 
 def test_the_risk_rule_throttles_by_entity_only_while_on_and_gets_its_fields_back(lab, tmp_path, rest):
     conf = PackConf(lab, "default")
