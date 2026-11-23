@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install pytest
+      - run: python -m pytest -q
+
+  scrub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scrub check
+        env:
+          # One private term per line, kept as a repository secret, never in the repo.
+          SCRUB_DENYLIST: ${{ secrets.SCRUB_DENYLIST }}
+        run: |
+          python3 tools/scrub_check.py || status=$?
+          # 2 = no deny-list configured (forks, or before the secret is set): private IPs were still checked.
+          if [ "${status:-0}" = "1" ]; then exit 1; fi
