@@ -1,15 +1,16 @@
 """Move a dataset from its earlier single-dataset app (botsv3_replay, botsv2_replay, dedale_replay)
 to replay_lab, so the replay continues where the old app stopped.
 
-Run on the member that played the old app, with the old app disabled (two apps writing one live
-index would double every event). In order:
+Run on the member that played the old app, with the old app or its input disabled (two apps
+writing one live index would double every event). In order:
 
 1. Rule originals from the old checkpoint go into the replay_lab_rules KV records, with this
    dataset as a holder. A rule another dataset already holds keeps the original recorded first.
 2. The old checkpoint (anchor, position, which rules are on) becomes the dataset's checkpoint. A
    running input picks it up on its next tick, and keeps it for 10 minutes even while the
    dataset is still off, so the settings below have time to arrive.
-3. The old app's local settings become [dataset:<name>], [feed:<name>:<feed>] and [rules:<name>]
+3. The old app's settings (default/ and local/: a deployer folds local/ into default/) that differ
+   from what replay_lab ships become [dataset:<name>], [feed:<name>:<feed>] and [rules:<name>]
    settings, saved through splunkd so a cluster replicates them. data_dir points at the old
    export (or at a copy of it, with copy_export). enabled is saved last, so the input never
    starts before its checkpoint is in place.
@@ -46,13 +47,43 @@ def new_checkpoint(home, dataset):
     return Path(home) / "var" / "lib" / "splunk" / "modinputs" / "replay_lab" / f"{dataset}.json"
 
 
-def read_local(path):
-    """{stanza: {key: value}} from the old app's local conf, or {} when it has none."""
+def read_conf(*paths):
+    """{stanza: {key: value}} from the given conf files, later ones on top; missing files are skipped."""
     parser = configparser.RawConfigParser(strict=False, interpolation=None)
     parser.optionxform = str
-    if Path(path).exists():
-        parser.read(path)
+    for path in paths:
+        if Path(path).exists():
+            # Splunk continues a value with a trailing backslash; configparser by indenting.
+            parser.read_string(Path(path).read_text(encoding="utf-8").replace("\\\n", "\n    "), source=str(path))
     return {s: dict(parser.items(s)) for s in parser.sections()}
+
+
+def read_local(path):
+    return read_conf(path)
+
+
+def _same(a, b):
+    """Two setting values are the same, line breaks and spacing aside."""
+    return " ".join(str(a).replace("\\", " ").split()) == " ".join(str(b).replace("\\", " ").split())
+
+
+def changed_settings(settings, app_dir, dataset):
+    """Only the values that differ from what replay_lab already ships for the dataset.
+
+    A search head cluster's deployer folds an app's local/ into default/, so the old app's own
+    settings and the lab's changes arrive mixed; comparing with the new defaults leaves the lab's
+    changes (run_on, data_dir, enabled, ...) and drops what the pack already says."""
+    shipped = read_conf(Path(app_dir) / "default" / config_mod.CONF)
+    defaults = dict(config_mod.REPLAY_DEFAULTS, index=f"{dataset}_live", source_index=dataset)
+    out = {}
+    for stanza, values in settings.items():
+        base = (dict(defaults) if stanza.startswith("dataset:") else
+                {"enabled": "1"} if stanza.startswith("feed:") else {"mode": "escu"})
+        base.update(shipped.get(stanza, {}))
+        kept = {k: v for k, v in values.items() if k not in base or not _same(v, base[k])}
+        if kept or stanza.startswith("dataset:"):
+            out[stanza] = kept
+    return out
 
 
 def old_data_dir(home, old_app, replay):
@@ -85,8 +116,9 @@ def plan(home, old_app, app_dir, copy_export=False, now=time.time):
     if not p["checkpoint"].exists():
         raise MigrateError(f"no checkpoint at {p['checkpoint']}: run this on the member that played {old_app}")
     state = json.loads(p["checkpoint"].read_text())
-    local = read_local(p["local"])
-    settings = stanzas(dataset, local)
+    # default/ too: a deployer folds local/ into it
+    local = read_conf(p["app"] / "default" / f"{old_app}.conf", p["local"])
+    settings = changed_settings(stanzas(dataset, local), app_dir, dataset)
     replay = settings.setdefault(f"dataset:{dataset}", {})
     warnings = []
     source = old_data_dir(home, old_app, local.get("replay", {}))
@@ -115,12 +147,20 @@ def plan(home, old_app, app_dir, copy_export=False, now=time.time):
             "warnings": warnings}
 
 
-def old_app_disabled(rest, old_app):
-    status, body = rest.call("GET", f"/services/apps/local/{urllib.parse.quote(old_app, safe='')}")
+def _disabled(rest, path):
+    status, body = rest.call("GET", path)
     if status == 404:
-        return True  # already removed
-    content = (body.get("entry") or [{}])[0].get("content") or {}
+        return True  # not there at all
+    content = (body.get("entry") or [{}])[0].get("content") or {} if status == 200 else {}
     return str(content.get("disabled", "0")).lower() in ("1", "true")
+
+
+def old_app_disabled(rest, old_app):
+    """The old app can't play: it's disabled or removed, or its input is disabled on this member
+    (a deployer-pushed app can't be disabled on one member, but its input can)."""
+    name = urllib.parse.quote(old_app, safe="")
+    return (_disabled(rest, f"/services/apps/local/{name}")
+            or _disabled(rest, f"/servicesNS/nobody/{name}/data/inputs/{name}/default"))
 
 
 def run(rest, home, old_app, app_dir, copy_export=False, force=False, log=print, now=time.time):
@@ -129,7 +169,8 @@ def run(rest, home, old_app, app_dir, copy_export=False, force=False, log=print,
     for warning in todo["warnings"]:
         log({"warning": warning})
     if not force and not old_app_disabled(rest, old_app):
-        raise MigrateError(f"disable {old_app} first: two apps playing one live index double every event")
+        raise MigrateError(f"disable {old_app}, or its input on this member, first: two apps playing one live "
+                           "index double every event")
     target = new_checkpoint(home, dataset)
     if target.exists() and not force:
         raise MigrateError(f"{dataset} already has a checkpoint ({target}); pass force to replace it")

@@ -30,15 +30,19 @@ ANCHOR = 1_800_000_000
 class FakeSplunkd(KvSplunkd):
     """The KV store, plus the apps and conf endpoints migrate uses."""
 
-    def __init__(self, disabled=("botsv3_replay", "botsv2_replay", "dedale_replay")):
+    def __init__(self, disabled=("botsv3_replay", "botsv2_replay", "dedale_replay"), inputs_off=()):
         super().__init__()
         self.disabled = set(disabled)
+        self.inputs_off = set(inputs_off)
         self.saved = []  # (stanza, values) in order
 
     def call(self, method, path, query=None, form=None, timeout=120, body=None):
         m = re.match(r"/services/apps/local/(\w+)$", path)
         if m:
             return 200, {"entry": [{"content": {"disabled": "1" if m.group(1) in self.disabled else "0"}}]}
+        m = re.match(r"/servicesNS/nobody/(\w+)/data/inputs/(\w+)/default$", path)
+        if m:
+            return 200, {"entry": [{"content": {"disabled": "1" if m.group(1) in self.inputs_off else "0"}}]}
         if path.startswith(migrate.CONF + "/"):
             self.saved.append((urllib.parse.unquote(path.rsplit("/", 1)[1]), dict(form)))
             return 200, {}
@@ -67,8 +71,7 @@ def old_app(home, name, built, rules=None, enabled="1", inside=True):
     count = store.write_feed(data, FEED[name], events, first)
     store.write_manifest(data, first, first + 23399, {FEED[name]: count}, 23400)
     (app / "local").mkdir(parents=True)
-    lines = ["[replay]", f"enabled = {enabled}", "schedule = loop", "window_start = 1534755600",
-             "window_end = 1534779000", "segments ="]
+    lines = ["[replay]", f"enabled = {enabled}", "schedule = loop"]
     if not inside:
         lines.append(f"data_dir = $SPLUNK_HOME/var/lib/{name}/data")
     lines += ["", f"[feed:{FEED[name]}]", "enabled = 1", "", "[rules]", "mode = escu"]
@@ -102,10 +105,14 @@ def test_a_migrated_dataset_continues_where_the_old_app_stopped(name, built, tmp
     # settings: renamed stanzas, data_dir at the old export, enabled saved last
     assert splunkd.saved[-1] == (f"dataset:{dataset}", {"enabled": "1"})
     settings = dict(splunkd.saved[:-1])
+    shipped = config_mod.load(built, dataset)
     assert settings[f"dataset:{dataset}"]["data_dir"] == str(home / "etc" / "apps" / name / "data")
-    assert settings[f"dataset:{dataset}"]["schedule"] == "loop"
-    assert settings[f"feed:{dataset}:{FEED[name]}"] == {"enabled": "1"}
-    assert settings[f"rules:{dataset}"] == {"mode": "escu"}
+    # only what differs from the pack is carried
+    assert ("schedule" in settings[f"dataset:{dataset}"]) == (shipped.replay["schedule"] != "loop")
+    assert "window_start" not in settings[f"dataset:{dataset}"]
+    feed = {f.name: f for f in shipped.feeds}[FEED[name]]
+    assert (f"feed:{dataset}:{FEED[name]}" in settings) == (not feed.enabled)
+    assert f"rules:{dataset}" not in settings  # mode escu, as shipped
     # rule originals into the shared KV records
     record = splunkd.record(SHARED)
     assert record["holders"] == [dataset]
@@ -165,7 +172,7 @@ def test_it_refuses_while_the_old_app_is_enabled_and_over_an_existing_checkpoint
     home = tmp_path / "home"
     monkeypatch.setenv("SPLUNK_HOME", str(home))
     old_app(home, "botsv3_replay", built)
-    with pytest.raises(migrate.MigrateError, match="disable botsv3_replay first"):
+    with pytest.raises(migrate.MigrateError, match="disable botsv3_replay, or its input on this member, first"):
         migrate.run(FakeSplunkd(disabled=()), home, "botsv3_replay", built, log=lambda r: None)
     splunkd = FakeSplunkd()
     migrate.run(splunkd, home, "botsv3_replay", built, log=lambda r: None)
@@ -228,3 +235,30 @@ def test_after_the_grace_an_off_dataset_forgets_its_position_as_usual(built, tmp
     clock[0] = ANCHOR + 601
     runner.tick()
     assert "next" not in runner.state and "migrated" not in runner.state
+
+
+def test_a_deployer_pushed_app_with_its_input_stopped_migrates_its_lab_settings(built, tmp_path, monkeypatch):
+    """A deployer folds local/ into default/ and the app can't be disabled on one member: its input is."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("SPLUNK_HOME", str(home))
+    dataset = old_app(home, "dedale_replay", built, inside=False)
+    app = home / "etc" / "apps" / "dedale_replay"
+    shipped = migrate.read_conf(built / "default" / config_mod.CONF)
+    renamed = {"dataset:dedale": "replay", "rules:dedale": "rules"}
+    old_default = "".join(
+        f"[{renamed.get(s, s.replace('feed:dedale:', 'feed:'))}]\n" +
+        "".join(f"{k} = " + v.replace("\n", " \\\n") + "\n" for k, v in vals.items()) + "\n"
+        for s, vals in shipped.items() if s in renamed or s.startswith("feed:dedale:"))
+    local = (app / "local" / "dedale_replay.conf").read_text().replace("[replay]\n", "[replay]\nrun_on = sh1\n")
+    (app / "default").mkdir()
+    (app / "default" / "dedale_replay.conf").write_text(old_default + "\n" + local)  # merged by the deployer
+    (app / "local" / "dedale_replay.conf").unlink()
+
+    splunkd = FakeSplunkd(disabled=(), inputs_off=("dedale_replay",))
+    migrate.run(splunkd, home, "dedale_replay", built, log=lambda r: None)
+    saved = {}
+    for stanza, values in splunkd.saved:
+        saved.setdefault(stanza, {}).update(values)
+    assert saved["dataset:dedale"] == {"enabled": "1", "run_on": "sh1",
+                                       "data_dir": str(home / "var" / "lib" / "dedale_replay" / "data")}
+    assert [s for s in saved if s != "dataset:dedale"] == []  # the rest matches the pack
