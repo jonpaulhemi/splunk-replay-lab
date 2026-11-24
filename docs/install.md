@@ -100,8 +100,11 @@ If a burst happens anyway, switch the dataset off and on before the next workday
 
 `replay_lab_migrate.py` moves a dataset from `botsv3_replay`, `botsv2_replay` or `dedale_replay`.
 It carries the checkpoint, the local settings and the saved rule originals, so the replay
-continues where the old app stopped. Run it on the member that played the old app, after
-disabling that app:
+continues where the old app stopped. Run it on the member that played the old app, after stopping
+that app. On a single box, disable the app. On a search head cluster, where a deployer-pushed app
+can't be disabled on one member, set the old app's `[replay] run_on` to a name no member has
+(`nobody`); migrate then makes the member it runs on the one that plays. Disabling only the old
+input doesn't stop it: splunkd restarts the input instead.
 
 ```
 splunk cmd python3 $SPLUNK_HOME/etc/apps/replay_lab/bin/replay_lab_migrate.py botsv3_replay https://localhost:8089 \
