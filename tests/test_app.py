@@ -259,3 +259,10 @@ def test_a_packs_loading_tools_and_readme_stay_out_of_the_package(tmp_path):
     root = make_repo(tmp_path, {"alpha": {"pack.conf": PACK, "README.md": "x\n", "load/convert.py": "x = 1\n"}})
     app = build.stage(tmp_path / "out", root)
     assert not list(app.rglob("convert.py")) and not list(app.rglob("README.md"))
+
+
+def test_a_cluster_replicates_the_settings(tmp_path):
+    """Settings saved on one search head cluster member reach the others."""
+    root = make_repo(tmp_path, {"alpha": {"pack.conf": PACK}})
+    server = conf(build.stage(tmp_path / "out", root) / "default" / "server.conf")
+    assert server.get("shclustering", "conf_replication_include.replay_lab") == "true"

@@ -1,8 +1,9 @@
 """Move a dataset from its earlier single-dataset app (botsv3_replay, botsv2_replay, dedale_replay)
 to replay_lab, so the replay continues where the old app stopped.
 
-Run on the member that played the old app, with the old app or its input disabled (two apps
-writing one live index would double every event). In order:
+Run on the member that played the old app, once the old app has stopped: disabled, its [replay]
+off, or its run_on set to a name no member has (two apps writing one live index would double every
+event; disabling only its input doesn't stop it). In order:
 
 1. Rule originals from the old checkpoint go into the replay_lab_rules KV records, with this
    dataset as a holder. A rule another dataset already holds keeps the original recorded first.
@@ -147,20 +148,42 @@ def plan(home, old_app, app_dir, copy_export=False, now=time.time):
             "warnings": warnings}
 
 
-def _disabled(rest, path):
-    status, body = rest.call("GET", path)
+TRUE = ("1", "true", "t", "yes", "y", "on")
+
+
+def _short(name):
+    return str(name).strip().lower().split(".")[0]
+
+
+def _app_disabled(rest, old_app):
+    status, body = rest.call("GET", f"/services/apps/local/{urllib.parse.quote(old_app, safe='')}")
     if status == 404:
-        return True  # not there at all
+        return True  # removed
     content = (body.get("entry") or [{}])[0].get("content") or {} if status == 200 else {}
-    return str(content.get("disabled", "0")).lower() in ("1", "true")
+    return str(content.get("disabled", "0")).lower() in TRUE
 
 
-def old_app_disabled(rest, old_app):
-    """The old app can't play: it's disabled or removed, or its input is disabled on this member
-    (a deployer-pushed app can't be disabled on one member, but its input can)."""
-    name = urllib.parse.quote(old_app, safe="")
-    return (_disabled(rest, f"/services/apps/local/{name}")
-            or _disabled(rest, f"/servicesNS/nobody/{name}/data/inputs/{name}/default"))
+def _server_name(rest):
+    status, body = rest.call("GET", "/services/server/info", query={"output_mode": "json"})
+    return ((body.get("entry") or [{}])[0].get("content") or {}).get("serverName", "") if status == 200 else ""
+
+
+def old_app_stopped(rest, home, old_app):
+    """Why the old app can't play on this member, or None if it still can.
+
+    Only the old app's own checks count: the app is disabled or removed, its [replay] is off, or
+    its run_on names another member. Disabling its input doesn't: splunkd restarts a
+    single-instance input instead of stopping it, and the old replay carries on."""
+    if _app_disabled(rest, old_app):
+        return "app disabled"
+    p = paths(home, old_app)
+    replay = read_conf(p["app"] / "default" / f"{old_app}.conf", p["local"]).get("replay", {})
+    if str(replay.get("enabled", "0")).strip().lower() not in TRUE:
+        return "[replay] enabled = 0"
+    run_on = (replay.get("run_on") or "").strip()
+    if run_on and _short(run_on) != _short(_server_name(rest) or run_on):
+        return f"run_on = {run_on}"
+    return None
 
 
 def run(rest, home, old_app, app_dir, copy_export=False, force=False, log=print, now=time.time):
@@ -168,9 +191,14 @@ def run(rest, home, old_app, app_dir, copy_export=False, force=False, log=print,
     dataset = todo["dataset"]
     for warning in todo["warnings"]:
         log({"warning": warning})
-    if not force and not old_app_disabled(rest, old_app):
-        raise MigrateError(f"disable {old_app}, or its input on this member, first: two apps playing one live "
-                           "index double every event")
+    stopped = old_app_stopped(rest, home, old_app)
+    if not force and stopped is None:
+        raise MigrateError(f"stop {old_app} first (set its [replay] run_on to a name no member has, or "
+                           "disable the app): two apps playing one live index double every event")
+    replay = todo["settings"][f"dataset:{dataset}"]
+    if stopped and stopped.startswith("run_on") and replay.get("run_on"):
+        # The old app was parked on a name no member has; replay_lab plays where migrate runs.
+        replay["run_on"] = _server_name(rest) or replay["run_on"]
     target = new_checkpoint(home, dataset)
     if target.exists() and not force:
         raise MigrateError(f"{dataset} already has a checkpoint ({target}); pass force to replace it")

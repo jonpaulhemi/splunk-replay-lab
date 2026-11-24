@@ -30,19 +30,18 @@ ANCHOR = 1_800_000_000
 class FakeSplunkd(KvSplunkd):
     """The KV store, plus the apps and conf endpoints migrate uses."""
 
-    def __init__(self, disabled=("botsv3_replay", "botsv2_replay", "dedale_replay"), inputs_off=()):
+    def __init__(self, disabled=("botsv3_replay", "botsv2_replay", "dedale_replay"), server="sh1.example.com"):
         super().__init__()
         self.disabled = set(disabled)
-        self.inputs_off = set(inputs_off)
+        self.server = server
         self.saved = []  # (stanza, values) in order
 
     def call(self, method, path, query=None, form=None, timeout=120, body=None):
         m = re.match(r"/services/apps/local/(\w+)$", path)
         if m:
             return 200, {"entry": [{"content": {"disabled": "1" if m.group(1) in self.disabled else "0"}}]}
-        m = re.match(r"/servicesNS/nobody/(\w+)/data/inputs/(\w+)/default$", path)
-        if m:
-            return 200, {"entry": [{"content": {"disabled": "1" if m.group(1) in self.inputs_off else "0"}}]}
+        if path == "/services/server/info":
+            return 200, {"entry": [{"content": {"serverName": self.server}}]}
         if path.startswith(migrate.CONF + "/"):
             self.saved.append((urllib.parse.unquote(path.rsplit("/", 1)[1]), dict(form)))
             return 200, {}
@@ -172,7 +171,7 @@ def test_it_refuses_while_the_old_app_is_enabled_and_over_an_existing_checkpoint
     home = tmp_path / "home"
     monkeypatch.setenv("SPLUNK_HOME", str(home))
     old_app(home, "botsv3_replay", built)
-    with pytest.raises(migrate.MigrateError, match="disable botsv3_replay, or its input on this member, first"):
+    with pytest.raises(migrate.MigrateError, match="stop botsv3_replay first"):
         migrate.run(FakeSplunkd(disabled=()), home, "botsv3_replay", built, log=lambda r: None)
     splunkd = FakeSplunkd()
     migrate.run(splunkd, home, "botsv3_replay", built, log=lambda r: None)
@@ -237,8 +236,9 @@ def test_after_the_grace_an_off_dataset_forgets_its_position_as_usual(built, tmp
     assert "next" not in runner.state and "migrated" not in runner.state
 
 
-def test_a_deployer_pushed_app_with_its_input_stopped_migrates_its_lab_settings(built, tmp_path, monkeypatch):
-    """A deployer folds local/ into default/ and the app can't be disabled on one member: its input is."""
+def test_a_deployer_pushed_app_parked_on_no_member_migrates_its_lab_settings(built, tmp_path, monkeypatch):
+    """A deployer folds local/ into default/, and the app can't be disabled on one member. Disabling its
+    input doesn't stop it either (splunkd restarts it); parking it on a name no member has does."""
     home = tmp_path / "home"
     monkeypatch.setenv("SPLUNK_HOME", str(home))
     dataset = old_app(home, "dedale_replay", built, inside=False)
@@ -254,11 +254,24 @@ def test_a_deployer_pushed_app_with_its_input_stopped_migrates_its_lab_settings(
     (app / "default" / "dedale_replay.conf").write_text(old_default + "\n" + local)  # merged by the deployer
     (app / "local" / "dedale_replay.conf").unlink()
 
-    splunkd = FakeSplunkd(disabled=(), inputs_off=("dedale_replay",))
+    splunkd = FakeSplunkd(disabled=())
+    with pytest.raises(migrate.MigrateError, match="stop dedale_replay first"):
+        migrate.run(splunkd, home, "dedale_replay", built, log=lambda r: None)  # still plays on sh1
+    (app / "local").mkdir(exist_ok=True)
+    (app / "local" / "dedale_replay.conf").write_text("[replay]\nrun_on = nobody\n")  # the REST fallback
     migrate.run(splunkd, home, "dedale_replay", built, log=lambda r: None)
     saved = {}
     for stanza, values in splunkd.saved:
         saved.setdefault(stanza, {}).update(values)
-    assert saved["dataset:dedale"] == {"enabled": "1", "run_on": "sh1",
+    assert saved["dataset:dedale"] == {"enabled": "1", "run_on": "sh1.example.com",
                                        "data_dir": str(home / "var" / "lib" / "dedale_replay" / "data")}
     assert [s for s in saved if s != "dataset:dedale"] == []  # the rest matches the pack
+
+
+def test_an_old_replay_that_is_off_counts_as_stopped(built, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("SPLUNK_HOME", str(home))
+    old_app(home, "botsv2_replay", built, enabled="0")
+    splunkd = FakeSplunkd(disabled=())
+    assert migrate.old_app_stopped(splunkd, home, "botsv2_replay") == "[replay] enabled = 0"
+    migrate.run(splunkd, home, "botsv2_replay", built, log=lambda r: None)
